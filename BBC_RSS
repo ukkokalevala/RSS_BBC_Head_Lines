@@ -1,0 +1,157 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+//#include "secrets.h"
+
+// OLED settings
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define SDA_PIN 7
+#define SCL_PIN 6
+#define OLED_RESET -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// WiFi credentials
+const char* ssid = "yourSSID";
+const char* password = "yourPASSWORD";
+
+// BBC RSS feed via rss2json
+const char* newsURL = "https://api.rss2json.com/v1/api.json?rss_url=http://feeds.bbci.co.uk/news/rss.xml";
+
+// Button settings
+#define BUTTON_PIN 4
+bool wasPressed = false;
+bool buttonPressed = false;
+
+// News headlines
+const int maxArticles = 10;
+String headlines[maxArticles];
+int totalArticles = 0;
+int currentArticle = 0;
+
+// Screensaver settings
+bool inScreensaver = false;
+unsigned long lastInteraction = 0;
+const unsigned long screensaverTimeout = 30000; // 30 seconds
+int dotX = 0, dotY = 0, dx = 2, dy = 1;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(SDA_PIN, SCL_PIN);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("SSD1306 init failed");
+    while (true);
+  }
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("Connecting to WiFi...");
+  display.display();
+
+  WiFi.begin(ssid, password);
+  unsigned long startTime = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startTime < 10000) {
+    delay(500);
+  }
+
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  if (WiFi.status() == WL_CONNECTED) {
+    display.println("WiFi Connected");
+  } else {
+    display.println("WiFi Failed");
+  }
+  display.display();
+  delay(1000);
+
+  fetchNews();
+  showHeadline(currentArticle);
+  lastInteraction = millis();
+}
+
+void loop() {
+  checkButton();
+
+  if (inScreensaver) {
+    runScreensaver();
+    if (buttonPressed) {
+      inScreensaver = false;
+      buttonPressed = false;
+      showHeadline(currentArticle);
+      lastInteraction = millis();
+    }
+    return;
+  }
+
+  if (buttonPressed) {
+    buttonPressed = false;
+    currentArticle = (currentArticle + 1) % totalArticles;
+    showHeadline(currentArticle);
+    lastInteraction = millis();
+  }
+
+  // Check if screensaver should start
+  if (millis() - lastInteraction > screensaverTimeout) {
+    inScreensaver = true;
+    dotX = 0; dotY = 0; dx = 2; dy = 1;
+  }
+}
+
+void fetchNews() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(newsURL);
+    int httpCode = http.GET();
+    if (httpCode == 200) {
+      String payload = http.getString();
+      DynamicJsonDocument doc(8192);
+      if (deserializeJson(doc, payload) == DeserializationError::Ok) {
+        JsonArray items = doc["items"];
+        totalArticles = min((int)items.size(), maxArticles);
+        for (int i = 0; i < totalArticles; i++) {
+          headlines[i] = items[i]["title"].as<String>();
+        }
+      }
+    }
+    http.end();
+  }
+}
+
+void showHeadline(int index) {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("BBC News:");
+  display.setCursor(0, 16);
+  display.println(headlines[index]);
+  display.display();
+}
+
+void checkButton() {
+  bool isPressed = digitalRead(BUTTON_PIN) == LOW;
+  if (isPressed && !wasPressed) {
+    buttonPressed = true;
+  }
+  wasPressed = isPressed;
+}
+
+void runScreensaver() {
+  display.clearDisplay();
+  display.fillCircle(dotX, dotY, 2, SSD1306_WHITE);
+  display.display();
+
+  dotX += dx;
+  dotY += dy;
+
+  if (dotX <= 0 || dotX >= SCREEN_WIDTH) dx = -dx;
+  if (dotY <= 0 || dotY >= SCREEN_HEIGHT) dy = -dy;
+
+  delay(40); // Adjust animation speed
+}
